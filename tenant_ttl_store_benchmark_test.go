@@ -7,11 +7,11 @@ import (
 	"time"
 )
 
-func BenchmarkTenantStoreSet(b *testing.B) {
+func BenchmarkTenantTTLStoreEnqueue(b *testing.B) {
 	store := NewTenantStore(10000000)
 	defer store.Close()
 
-	tenantID := "t001"
+	tenantID := "t0001"
 	callback := func(tenantId string, key int64) {
 		fmt.Printf("key: %d, tenantId: %v , fire the init_cancel event", key, tenantId)
 	}
@@ -22,7 +22,7 @@ func BenchmarkTenantStoreSet(b *testing.B) {
 	}
 }
 
-func BenchmarkTenantStoreGet(b *testing.B) {
+func BenchmarkTenantTTLStorePop(b *testing.B) {
 	store := NewTenantStore(10000000)
 	defer store.Close()
 	callback := func(tenantId string, key int64) {
@@ -30,7 +30,7 @@ func BenchmarkTenantStoreGet(b *testing.B) {
 	}
 	tenantID := "t0001"
 	// pre-fill with items
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 10000; i++ {
 		store.Enqueue(tenantID, int64(i), "value"+strconv.Itoa(i), callback, 5*time.Second)
 	}
 
@@ -40,15 +40,15 @@ func BenchmarkTenantStoreGet(b *testing.B) {
 	}
 }
 
-func BenchmarkTenantStorePopFirst(b *testing.B) {
+func BenchmarkTenantTTLStoreEnqueueDequeue(b *testing.B) {
 	store := NewTenantStore(10000000)
 	defer store.Close()
 	callback := func(tenantId string, key int64) {
 		fmt.Printf("key: %d, tenantId: %v , fire the init_cancel event", key, tenantId)
 	}
-	tenantID := "t001"
+	tenantID := "t0001"
 	// pre-fill with items
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 10000; i++ {
 		store.Enqueue(tenantID, int64(i), "value"+strconv.Itoa(i), callback, 5*time.Second)
 	}
 
@@ -58,7 +58,7 @@ func BenchmarkTenantStorePopFirst(b *testing.B) {
 	}
 }
 
-func BenchmarkTenantStoreRemove(b *testing.B) {
+func BenchmarkTenantTTLStoreRemove(b *testing.B) {
 	store := NewTenantStore(10000000)
 	defer store.Close()
 	callback := func(tenantId string, key int64) {
@@ -66,7 +66,7 @@ func BenchmarkTenantStoreRemove(b *testing.B) {
 	}
 	tenantID := "t0001"
 	// pre-fill with items
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 10000; i++ {
 		store.Enqueue(tenantID, int64(i), "value"+strconv.Itoa(i), callback, 5*time.Second)
 	}
 
