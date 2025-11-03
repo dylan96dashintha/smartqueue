@@ -1,3 +1,3 @@
-module dylan96dashintha/smartqueue
+module github.com/smartqueue
 
 go 1.25.0

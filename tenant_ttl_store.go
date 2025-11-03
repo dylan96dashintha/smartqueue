@@ -1,4 +1,4 @@
-package queue
+package smartqueue
 
 import (
 	"container/heap"
@@ -7,9 +7,9 @@ import (
 )
 
 type tenantTTLStore struct {
-	mu                 sync.Mutex
+	//mu                 sync.Mutex
+	tenantsMu          sync.RWMutex
 	tenantOrderedStore map[string]*orderedStore
-	expiryListHeap     expiryList
 	stopCh             chan struct{}
 	wg                 sync.WaitGroup
 	capacity           int64
@@ -18,19 +18,18 @@ type tenantTTLStore struct {
 func NewTenantStore(capacity int64) SmartQueue {
 	t := &tenantTTLStore{
 		tenantOrderedStore: make(map[string]*orderedStore),
-		expiryListHeap:     expiryList{},
-		stopCh:             make(chan struct{}),
-		capacity:           capacity,
+		//expiryListHeap:     expiryList{},
+		stopCh:   make(chan struct{}),
+		capacity: capacity,
 	}
-	heap.Init(&t.expiryListHeap)
-	t.wg.Add(1)
-	go t.cleanupLoop()
+	//t.wg.Add(1)
+	//go t.cleanupLoop()
 	return t
 }
 
 func (t *tenantTTLStore) GetTenantOrderedMap(tenantId string) (*orderedStore, bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.tenantsMu.RLock()
+	defer t.tenantsMu.RUnlock()
 
 	td, ok := t.tenantOrderedStore[tenantId]
 	if !ok {
@@ -42,19 +41,23 @@ func (t *tenantTTLStore) GetTenantOrderedMap(tenantId string) (*orderedStore, bo
 // Insert or update key for a tenant with per-entry TTL
 func (t *tenantTTLStore) Enqueue(tenantId string, key int64, value any,
 	callback func(tenantId string, key int64), ttl time.Duration) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	//t.mu.Lock()
+	//defer t.mu.Unlock()
 
-	tenantSpecificOrderedStore := t.ensureTenant(tenantId)
+	tenantSpecificOrderedStore := t.tenantStore(tenantId)
+
+	tenantSpecificOrderedStore.mu.Lock()
+	defer tenantSpecificOrderedStore.mu.Unlock()
 	if tenantSpecificOrderedStore.size.Load() >= tenantSpecificOrderedStore.capacity {
 		// dequeue the item and then enqueue
-		t.removeOldestForCapacity(tenantId)
+		t.removeOldestForCapacity(tenantId, tenantSpecificOrderedStore)
 	} else {
 		tenantSpecificOrderedStore.size.Add(1)
 	}
 	exp := time.Now().Add(ttl)
 
-	if e, ok := tenantSpecificOrderedStore.entryMap[key]; ok {
+	e, ok := tenantSpecificOrderedStore.entryMap[key]
+	if ok {
 		e.value = value
 		e.expiryTime = exp
 	} else {
@@ -68,7 +71,7 @@ func (t *tenantTTLStore) Enqueue(tenantId string, key int64, value any,
 		}
 	}
 
-	heap.Push(&t.expiryListHeap, expiry{
+	heap.Push(&tenantSpecificOrderedStore.expiryListHeap, expiry{
 		tenantId:   tenantId,
 		key:        key,
 		expiration: exp,
@@ -76,13 +79,16 @@ func (t *tenantTTLStore) Enqueue(tenantId string, key int64, value any,
 }
 
 func (t *tenantTTLStore) Pop(tenantID string, key int64) (any, bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	//t.mu.Lock()
+	//defer t.mu.Unlock()
 
 	tenantSpecificOrderedStore, ok := t.tenantOrderedStore[tenantID]
 	if !ok {
 		return nil, false
 	}
+
+	tenantSpecificOrderedStore.mu.Lock()
+	defer tenantSpecificOrderedStore.mu.Unlock()
 
 	e, ok := tenantSpecificOrderedStore.entryMap[key]
 	if !ok {
@@ -98,13 +104,16 @@ func (t *tenantTTLStore) Pop(tenantID string, key int64) (any, bool) {
 }
 
 func (t *tenantTTLStore) Dequeue(tenantId string) (int64, any, bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	//t.mu.Lock()
+	//defer t.mu.Unlock()
 
 	tenantSpecificOrderedStore, ok := t.tenantOrderedStore[tenantId]
 	if !ok {
 		return 0, nil, false
 	}
+
+	tenantSpecificOrderedStore.mu.Lock()
+	defer tenantSpecificOrderedStore.mu.Unlock()
 
 	front := tenantSpecificOrderedStore.order.Front()
 	if front == nil {
@@ -124,21 +133,39 @@ func (t *tenantTTLStore) Dequeue(tenantId string) (int64, any, bool) {
 }
 
 func (t *tenantTTLStore) Remove(tenantID string, key int64) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	tenantSpecificOrderedStore, ok := t.tenantOrderedStore[tenantID]
+	if !ok {
+		return
+	}
+
+	tenantSpecificOrderedStore.mu.Lock()
+	defer tenantSpecificOrderedStore.mu.Unlock()
 	t.removeInternal(tenantID, key)
 }
 
-func (t *tenantTTLStore) ensureTenant(tenantID string) *orderedStore {
-	tenantSpecificOrderedStore, ok := t.tenantOrderedStore[tenantID]
+func (t *tenantTTLStore) tenantStore(tenantId string) *orderedStore {
+	t.tenantsMu.RLock()
+	tenantSpecificOrderedStore, ok := t.tenantOrderedStore[tenantId]
+	t.tenantsMu.RUnlock()
 	if !ok {
-		tenantSpecificOrderedStore = newOrderedStore(t.capacity)
-		t.tenantOrderedStore[tenantID] = tenantSpecificOrderedStore
+		// If not exists, lock for writing
+		t.tenantsMu.Lock()
+		// double-check in case another goroutine created it
+		tenantSpecificOrderedStore, ok = t.tenantOrderedStore[tenantId]
+		if !ok {
+			tenantSpecificOrderedStore = newOrderedStore(t.capacity)
+			t.tenantOrderedStore[tenantId] = tenantSpecificOrderedStore
+
+			t.wg.Add(1)
+			go t.cleanupTenantLoop(tenantId, tenantSpecificOrderedStore)
+		}
+		t.tenantsMu.Unlock()
 	}
 	return tenantSpecificOrderedStore
 }
 
 func (t *tenantTTLStore) removeInternal(tenantID string, key int64, limitReached ...bool) {
+	// Caller must hold tenantSpecificOrderedStore.mu
 	tenantSpecificOrderedStore, ok := t.tenantOrderedStore[tenantID]
 	if !ok {
 		return
@@ -157,48 +184,46 @@ func (t *tenantTTLStore) removeInternal(tenantID string, key int64, limitReached
 
 }
 
-func (t *tenantTTLStore) cleanupLoop() {
+func (t *tenantTTLStore) cleanupTenantLoop(tenantID string, tenantStore *orderedStore) {
 	defer t.wg.Done()
 
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
 	for {
-		t.mu.Lock()
+		select {
+		case <-t.stopCh:
+			return
+		case <-ticker.C:
+			now := time.Now()
 
-		if len(t.expiryListHeap) == 0 {
-			t.mu.Unlock()
-			select {
-			case <-t.stopCh:
-				return
-			case <-time.After(500 * time.Millisecond):
-				continue
+			tenantStore.mu.Lock()
+			for tenantStore.expiryListHeap.Len() > 0 {
+				next := tenantStore.expiryListHeap[0]
+				if next.expiration.After(now) {
+					break
+				}
+				heap.Pop(&tenantStore.expiryListHeap)
+
+				if e, ok := tenantStore.entryMap[next.key]; ok {
+					tenantStore.order.Remove(e.element)
+					delete(tenantStore.entryMap, next.key)
+					tenantStore.size.Add(-1)
+
+					tenantStore.mu.Unlock()
+					e.expiryFunc(tenantID, next.key)
+
+					tenantStore.mu.Lock()
+
+				}
 			}
+			tenantStore.mu.Unlock()
 		}
-
-		next := t.expiryListHeap[0]
-		now := time.Now()
-		delay := next.expiration.Sub(now)
-
-		if delay > 0 {
-			t.mu.Unlock()
-			select {
-			case <-t.stopCh:
-				return
-			case <-time.After(delay):
-				continue
-			}
-		}
-
-		heap.Pop(&t.expiryListHeap)
-		t.removeInternal(next.tenantId, next.key, true)
-		t.mu.Unlock()
 	}
 }
 
-func (t *tenantTTLStore) removeOldestForCapacity(tenantId string) {
-
-	tenantSpecificOrderedStore, ok := t.tenantOrderedStore[tenantId]
-	if !ok {
-		return
-	}
+func (t *tenantTTLStore) removeOldestForCapacity(tenantId string,
+	tenantSpecificOrderedStore *orderedStore) {
 
 	front := tenantSpecificOrderedStore.order.Front()
 	if front == nil {
@@ -213,7 +238,7 @@ func (t *tenantTTLStore) removeOldestForCapacity(tenantId string) {
 
 }
 
-func (t *tenantTTLStore) Close() {
+func (t *tenantTTLStore) Stop() {
 	close(t.stopCh)
 	t.wg.Wait()
 }

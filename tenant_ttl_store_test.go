@@ -1,7 +1,6 @@
-package queue
+package smartqueue
 
 import (
-	"fmt"
 	"testing"
 	"time"
 )
@@ -14,7 +13,7 @@ type mockEntry struct {
 func TestTenantTTLStoreEnqueue(t *testing.T) {
 
 	mockCallback := func(tenantId string, key int64) {
-		fmt.Printf("key: %d, tenantId: %v , fire the init_cancel event", key, tenantId)
+		//fmt.Printf("key: %d, tenantId: %v , fire the init_cancel event", key, tenantId)
 	}
 
 	type fields struct {

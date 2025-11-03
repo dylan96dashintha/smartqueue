@@ -1,19 +1,31 @@
-package queue
+package smartqueue
 
 import (
 	"fmt"
+	"os"
+	"runtime"
+	"runtime/pprof"
 	"strconv"
 	"testing"
 	"time"
 )
 
+func init() {
+	runtime.GOMAXPROCS(1) // simulate 0.5 CPU in local machine
+}
+
 func BenchmarkTenantTTLStoreEnqueue(b *testing.B) {
 	store := NewTenantStore(10000000)
-	defer store.Close()
+	defer store.Stop()
 
+	f, err := os.Create("cpu.prof")
+	if err != nil {
+		b.Fatal(err)
+	}
+	pprof.StartCPUProfile(f)
+	defer pprof.StopCPUProfile()
 	tenantID := "t0001"
 	callback := func(tenantId string, key int64) {
-		fmt.Printf("key: %d, tenantId: %v , fire the init_cancel event", key, tenantId)
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -22,9 +34,41 @@ func BenchmarkTenantTTLStoreEnqueue(b *testing.B) {
 	}
 }
 
+func BenchmarkTenantTTLStoreConcurrent(b *testing.B) {
+	store := NewTenantStore(10000000)
+	defer store.Stop()
+
+	tenantID := "t0001"
+	callback := func(tenantId string, key int64) {}
+
+	//maxKeys := 100
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			key := int64(i)
+			store.Enqueue(
+				tenantID,
+				key,
+				"value"+strconv.Itoa(i),
+				callback,
+				5*time.Second,
+			)
+
+			// Dequeue or Pop occasionally
+			if i%5 == 0 {
+				store.Dequeue(tenantID)
+			}
+
+			i++
+		}
+	})
+}
+
 func BenchmarkTenantTTLStorePop(b *testing.B) {
 	store := NewTenantStore(10000000)
-	defer store.Close()
+	defer store.Stop()
 	callback := func(tenantId string, key int64) {
 		fmt.Printf("key: %d, tenantId: %v , fire the init_cancel event", key, tenantId)
 	}
@@ -42,7 +86,7 @@ func BenchmarkTenantTTLStorePop(b *testing.B) {
 
 func BenchmarkTenantTTLStoreEnqueueDequeue(b *testing.B) {
 	store := NewTenantStore(10000000)
-	defer store.Close()
+	defer store.Stop()
 	callback := func(tenantId string, key int64) {
 		fmt.Printf("key: %d, tenantId: %v , fire the init_cancel event", key, tenantId)
 	}
@@ -60,7 +104,7 @@ func BenchmarkTenantTTLStoreEnqueueDequeue(b *testing.B) {
 
 func BenchmarkTenantTTLStoreRemove(b *testing.B) {
 	store := NewTenantStore(10000000)
-	defer store.Close()
+	defer store.Stop()
 	callback := func(tenantId string, key int64) {
 		fmt.Printf("key: %d, tenantId: %v , fire the init_cancel event", key, tenantId)
 	}

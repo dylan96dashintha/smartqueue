@@ -1,13 +1,14 @@
-package queue
+package main
 
 import (
 	"fmt"
+	"github.com/smartqueue"
 	"time"
 )
 
 func main() {
-	store := NewTenantStore(1000)
-	defer store.Close()
+	store := smartqueue.NewTenantStore(1000)
+	defer store.Stop()
 
 	callback := func(tenantId string, key int64) {
 		fmt.Printf("key: %d, tenantId: %v , fire the init_cancel event", key, tenantId)
@@ -32,5 +33,5 @@ func main() {
 	fmt.Println(store.Pop("t0002", 124)) // still valid
 	//fmt.Println(store.PopFirst("t0001")) // removes oldest valid item (a2)
 	time.Sleep(20 * time.Second)
-	fmt.Println(store.GetTenantOrderedMap("t0001"))
+	//fmt.Println(store.GetTenantOrderedMap("t0001"))
 }

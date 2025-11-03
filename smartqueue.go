@@ -1,6 +1,8 @@
-package queue
+package smartqueue
 
-import "time"
+import (
+	"time"
+)
 
 type SmartQueue interface {
 	Enqueue(tenantId string, key int64, value any,
@@ -9,5 +11,5 @@ type SmartQueue interface {
 	Dequeue(tenantID string) (int64, any, bool)
 	Remove(tenantID string, key int64)
 	GetTenantOrderedMap(tenantId string) (*orderedStore, bool)
-	Close()
+	Stop()
 }

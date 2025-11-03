@@ -1,4 +1,4 @@
-package queue
+package smartqueue
 
 import (
 	"container/list"
