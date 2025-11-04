@@ -187,38 +187,43 @@ func (t *tenantTTLStore) removeInternal(tenantID string, key int64, limitReached
 func (t *tenantTTLStore) cleanupTenantLoop(tenantID string, tenantStore *orderedStore) {
 	defer t.wg.Done()
 
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
 	for {
-		select {
-		case <-t.stopCh:
-			return
-		case <-ticker.C:
-			now := time.Now()
+		tenantStore.mu.Lock()
 
-			tenantStore.mu.Lock()
-			for tenantStore.expiryListHeap.Len() > 0 {
-				next := tenantStore.expiryListHeap[0]
-				if next.expiration.After(now) {
-					break
-				}
-				heap.Pop(&tenantStore.expiryListHeap)
-
-				if e, ok := tenantStore.entryMap[next.key]; ok {
-					tenantStore.order.Remove(e.element)
-					delete(tenantStore.entryMap, next.key)
-					tenantStore.size.Add(-1)
-
-					tenantStore.mu.Unlock()
-					e.expiryFunc(tenantID, next.key)
-
-					tenantStore.mu.Lock()
-
-				}
-			}
+		if tenantStore.expiryListHeap.Len() == 0 {
 			tenantStore.mu.Unlock()
+			select {
+			case <-t.stopCh:
+				return
+			case <-time.After(500 * time.Millisecond):
+				continue
+			}
 		}
+
+		next := tenantStore.expiryListHeap[0]
+		now := time.Now()
+		delay := next.expiration.Sub(now)
+
+		if delay > 0 {
+			tenantStore.mu.Unlock()
+			select {
+			case <-t.stopCh:
+				return
+			case <-time.After(delay):
+				continue
+			}
+		}
+
+		// Expired now, pop and handle
+		heap.Pop(&tenantStore.expiryListHeap)
+		if e, ok := tenantStore.entryMap[next.key]; ok {
+			e.expiryFunc(tenantID, next.key)
+			tenantStore.order.Remove(e.element)
+			delete(tenantStore.entryMap, next.key)
+			tenantStore.size.Add(-1)
+		}
+
+		tenantStore.mu.Unlock()
 	}
 }
 
