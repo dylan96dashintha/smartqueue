@@ -12,4 +12,5 @@ type SmartQueue interface {
 	Remove(tenantID string, key int64)
 	GetTenantOrderedMap(tenantId string) (*orderedStore, bool)
 	Stop()
+	RegisterHTTPHandlers(port ...int64) (err error)
 }

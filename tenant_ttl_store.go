@@ -2,12 +2,29 @@ package smartqueue
 
 import (
 	"container/heap"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
 
+const (
+	defaultPort       = 8098
+	tenantSpecificUrl = `/smartqueue/tenant/`
+	entryParam        = `entry`
+)
+
+type tenantView struct {
+	Key        int64         `json:"key"`
+	Value      any           `json:"value"`
+	ExpiryTime int64         `json:"expiry_time"`
+	TTL        time.Duration `json:"ttl_remaining"`
+}
+
 type tenantTTLStore struct {
-	//mu                 sync.Mutex
 	tenantsMu          sync.RWMutex
 	tenantOrderedStore map[string]*orderedStore
 	stopCh             chan struct{}
@@ -18,12 +35,10 @@ type tenantTTLStore struct {
 func NewTenantStore(capacity int64) SmartQueue {
 	t := &tenantTTLStore{
 		tenantOrderedStore: make(map[string]*orderedStore),
-		//expiryListHeap:     expiryList{},
-		stopCh:   make(chan struct{}),
-		capacity: capacity,
+		stopCh:             make(chan struct{}),
+		capacity:           capacity,
 	}
-	//t.wg.Add(1)
-	//go t.cleanupLoop()
+
 	return t
 }
 
@@ -41,8 +56,6 @@ func (t *tenantTTLStore) GetTenantOrderedMap(tenantId string) (*orderedStore, bo
 // Insert or update key for a tenant with per-entry TTL
 func (t *tenantTTLStore) Enqueue(tenantId string, key int64, value any,
 	callback func(tenantId string, key int64), ttl time.Duration) {
-	//t.mu.Lock()
-	//defer t.mu.Unlock()
 
 	tenantSpecificOrderedStore := t.tenantStore(tenantId)
 
@@ -79,8 +92,6 @@ func (t *tenantTTLStore) Enqueue(tenantId string, key int64, value any,
 }
 
 func (t *tenantTTLStore) Pop(tenantID string, key int64) (any, bool) {
-	//t.mu.Lock()
-	//defer t.mu.Unlock()
 
 	tenantSpecificOrderedStore, ok := t.tenantOrderedStore[tenantID]
 	if !ok {
@@ -104,9 +115,6 @@ func (t *tenantTTLStore) Pop(tenantID string, key int64) (any, bool) {
 }
 
 func (t *tenantTTLStore) Dequeue(tenantId string) (int64, any, bool) {
-	//t.mu.Lock()
-	//defer t.mu.Unlock()
-
 	tenantSpecificOrderedStore, ok := t.tenantOrderedStore[tenantId]
 	if !ok {
 		return 0, nil, false
@@ -236,7 +244,6 @@ func (t *tenantTTLStore) removeOldestForCapacity(tenantId string,
 	}
 
 	key := front.Value.(int64)
-	//e := tenantSpecificOrderedStore.entryMap[key]
 
 	t.removeInternal(tenantId, key, true)
 	return
@@ -246,4 +253,112 @@ func (t *tenantTTLStore) removeOldestForCapacity(tenantId string,
 func (t *tenantTTLStore) Stop() {
 	close(t.stopCh)
 	t.wg.Wait()
+}
+
+func (t *tenantTTLStore) RegisterHTTPHandlers(port ...int64) (err error) {
+
+	mux := http.NewServeMux()
+	httpPort := int64(defaultPort)
+	if len(port) != 0 {
+		httpPort = port[0]
+	}
+	err = http.ListenAndServe(fmt.Sprintf(":%d", httpPort), mux)
+	if err != nil {
+		return err
+	}
+	// Tenant or Entry details
+	mux.HandleFunc(tenantSpecificUrl, func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, tenantSpecificUrl)
+		parts := strings.Split(path, "/")
+
+		if len(parts) == 0 || parts[0] == "" {
+			http.Error(w, "tenant ID required", http.StatusBadRequest)
+			return
+		}
+
+		tenantID := parts[0]
+
+		if len(parts) == 1 {
+			t.handleTenantView(w, tenantID)
+			return
+		}
+
+		if len(parts) == 3 && parts[1] == entryParam {
+			entryIDStr := parts[2]
+			entryID, err := strconv.ParseInt(entryIDStr, 10, 64)
+			if err != nil {
+				http.Error(w, "invalid entry ID", http.StatusBadRequest)
+				return
+			}
+
+			t.handleTenantEntryView(w, tenantID, entryID)
+			return
+		}
+
+		http.NotFound(w, r)
+	})
+
+	return nil
+}
+
+func (t *tenantTTLStore) handleTenantView(w http.ResponseWriter, tenantID string) {
+	t.tenantsMu.RLock()
+	tenantStore, ok := t.tenantOrderedStore[tenantID]
+	t.tenantsMu.RUnlock()
+
+	if !ok {
+		http.Error(w, "tenant not found", http.StatusNotFound)
+		return
+	}
+
+	tenantStore.mu.RLock()
+	defer tenantStore.mu.RUnlock()
+
+	//now := time.Now()
+	var items []tenantView
+	for k, e := range tenantStore.entryMap {
+		items = append(items, tenantView{
+			Key:        k,
+			Value:      e.value,
+			ExpiryTime: e.expiryTime.Unix(),
+			TTL:        time.Until(e.expiryTime),
+		})
+	}
+
+	writeJSON(w, items)
+}
+
+func (t *tenantTTLStore) handleTenantEntryView(w http.ResponseWriter, tenantId string, entryID int64) {
+
+	t.tenantsMu.RLock()
+	tenantSpecificOrderedStore, ok := t.tenantOrderedStore[tenantId]
+	t.tenantsMu.RUnlock()
+
+	if !ok {
+		http.Error(w, "tenant not found", http.StatusNotFound)
+		return
+	}
+
+	tenantSpecificOrderedStore.mu.RLock()
+	defer tenantSpecificOrderedStore.mu.RUnlock()
+
+	e, ok := tenantSpecificOrderedStore.entryMap[entryID]
+	if !ok {
+		http.Error(w, "entry not found", http.StatusNotFound)
+		return
+	}
+
+	writeJSON(w, tenantView{
+		Key:        e.id,
+		Value:      e.value,
+		ExpiryTime: e.expiryTime.Unix(),
+		TTL:        time.Until(e.expiryTime),
+	})
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(v)
 }

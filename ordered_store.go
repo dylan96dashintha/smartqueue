@@ -8,7 +8,7 @@ import (
 )
 
 type orderedStore struct {
-	mu             sync.Mutex
+	mu             sync.RWMutex
 	entryMap       map[int64]*entry
 	capacity       int64
 	size           atomic.Int64
