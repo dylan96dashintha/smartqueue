@@ -123,10 +123,10 @@ func TestTenantTTLStoresEnqueue(t *testing.T) {
 			defer store.Stop()
 
 			// enqueue first
-			store.Enqueue(tt.args.tenantId, tt.args.key, tt.args.value, tt.args.callback, tt.args.ttl)
+			capacity := store.Enqueue(tt.args.tenantId, tt.args.key, tt.args.value, tt.args.callback, tt.args.ttl)
 
 			if tt.capacityExceeds {
-				store.Enqueue(tt.args.tenantId, tt.args.key+1, tt.args.value, tt.args.callback, tt.args.ttl)
+				capacity = store.Enqueue(tt.args.tenantId, tt.args.key+1, tt.args.value, tt.args.callback, tt.args.ttl)
 			}
 			// optional update same key
 			if tt.updateExisting {
@@ -150,6 +150,9 @@ func TestTenantTTLStoresEnqueue(t *testing.T) {
 				val, isExist = store.Pop(tt.args.tenantId, tt.args.key+1)
 				if isExist != tt.wantExist {
 					t.Errorf("%s: expected existence %v, got %v", tt.name, tt.wantExist, isExist)
+				}
+				if capacity != tt.capacityExceeds {
+					t.Errorf("%s: expected existence %v, got %v", tt.name, tt.capacityExceeds, capacity)
 				}
 			}
 

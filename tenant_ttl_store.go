@@ -53,15 +53,16 @@ func (t *tenantTTLStore) GetTenantOrderedMap(tenantId string) (*orderedStore, bo
 	return td, true
 }
 
-// Insert or update key for a tenant with per-entry TTL
+// Enqueue Insert or update key for a tenant with per-entry TTL
 func (t *tenantTTLStore) Enqueue(tenantId string, key int64, value any,
-	callback func(tenantId string, key int64), ttl time.Duration) {
+	callback func(tenantId string, key int64), ttl time.Duration) (capacityReached bool) {
 
 	tenantSpecificOrderedStore := t.tenantStore(tenantId)
 
 	tenantSpecificOrderedStore.mu.Lock()
 	defer tenantSpecificOrderedStore.mu.Unlock()
 	if tenantSpecificOrderedStore.size.Load() >= tenantSpecificOrderedStore.capacity {
+		capacityReached = true
 		// dequeue the item and then enqueue
 		t.removeOldestForCapacity(tenantId, tenantSpecificOrderedStore)
 	} else {
@@ -89,6 +90,8 @@ func (t *tenantTTLStore) Enqueue(tenantId string, key int64, value any,
 		key:        key,
 		expiration: exp,
 	})
+
+	return capacityReached
 }
 
 func (t *tenantTTLStore) Pop(tenantID string, key int64) (any, bool) {
